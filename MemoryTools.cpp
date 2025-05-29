@@ -1,5 +1,5 @@
-#include <tlhelp32.h>
 #include "MemoryTools.h"
+#include <tlhelp32.h>
 #include "Input.h"
 
 void ClearScreen() {
