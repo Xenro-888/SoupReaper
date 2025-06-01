@@ -8,4 +8,5 @@ add_executable(SoupReaper main.cpp
         MemoryTools.cpp
         Input.h
         Input.cpp
+        MemoryManipulation.h
 )

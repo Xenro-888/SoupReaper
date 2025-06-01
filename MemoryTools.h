@@ -3,10 +3,11 @@
 #include <vector>
 #include <iostream>
 #include <map>
+
 #include "Windows.h"
 
 // ENUMS //
-enum class DataType {INT, FLOAT, DOUBLE, BOOL};
+enum class DataType {INT, FLOAT, DOUBLE};
 enum class SieveRule {ONLY_UP, ONLY_DOWN, STILL};
 
 // FUNCTIONS //
@@ -21,12 +22,24 @@ std::vector<uintptr_t> GetFirstHotAddresses(HANDLE victimProcess, DataType dataT
 void Widdling(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataType dataType);
 void Sieving(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataType dataType);
 void ManipulateAddresses(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataType dataType);
+bool IsDoubleInRange(double readValue, double soughtValue, double range);
+// Prompts the user for a data type and returns it.
+DataType GetUserDataType();
+std::vector<uintptr_t> GetCachedAddressesByName(const std::string& name);
 
 // TEMPLATE FUNCTIONS //
 template<typename T>
-void WriteMemory(HANDLE victimProcess, std::vector<uintptr_t>& addresses, T data) {
-    for (const uintptr_t address : addresses)
-        WriteProcessMemory(victimProcess, reinterpret_cast<LPVOID>(address), &data, sizeof(T), nullptr);
+bool LetValuePass(T readValue, T valueToFind, double range) {
+    const bool inRange = IsDoubleInRange(static_cast<double>(readValue), static_cast<double>(valueToFind), range);
+
+    if (readValue == valueToFind)
+        return true;
+
+    if (readValue != valueToFind && range > 0 && inRange) {
+        return true;
+    }
+
+    return false;
 }
 
 template<typename T>
@@ -47,28 +60,64 @@ std::map<uintptr_t, T> MapAddressValues(HANDLE victimProcess, std::vector<uintpt
 }
 
 template<typename T>
-void Widdle(const HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataType dataType, T value, double range) {
+void WatchAddresses(HANDLE victimProcess, std::vector<uintptr_t>& addresses) {
+    std::map<uintptr_t, T> valueMap = MapAddressValues<T>(victimProcess, addresses);
+
+    std::cout << "PRESS \"S\" TO STOP.\n";
+    while (true) {
+        if (GetKeyState('S') & 0x8000)
+            break;
+
+        for (const uintptr_t& address : addresses) {
+            T value = ReadAddress<T>(victimProcess, address);
+            if (value == valueMap[address])
+                continue;
+
+            std::cout << "CHANGE DETECTED!:\n " << reinterpret_cast<void*>(address) << " -> " << value << "\n\n";
+            break;
+        }
+    }
+}
+
+template<typename T>
+void WriteMemory(HANDLE victimProcess, std::vector<uintptr_t>& addresses, T data, const bool watchAddresses, const bool stepThroughAddresses) {
+    for (const uintptr_t address : addresses) {
+        WriteProcessMemory(victimProcess, reinterpret_cast<LPVOID>(address), &data, sizeof(T), nullptr);
+
+        // step through addresses
+        if (stepThroughAddresses) {
+            std::cout << reinterpret_cast<void*>(address) << " SET TO " << data << "\n";
+            std::cin.get();
+        }
+    }
+    std::cout << "WRITTEN! ENJOY YOUR BUSTED GAME YOU FILTHY HACKER.\n";
+
+    if (watchAddresses)
+        WatchAddresses<T>(victimProcess, addresses);
+}
+
+template<typename T>
+void Widdle(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataType dataType, T value, double range) {
     for (int i = hotAddresses.size() - 1; i >= 0; --i) {
         const uintptr_t address = hotAddresses.at(i);
         T readValue = ReadAddress<T>(victimProcess, address);
 
-        bool inRange = (range > 0) && std::abs(readValue - value) < static_cast<T>(range);
-        if (readValue != value || inRange)
+        if (!LetValuePass(readValue, value, range))
             hotAddresses.erase(hotAddresses.begin() + i);
     }
 }
 
 // Filters out addresses that change value in the blacklisted manner.
 template<typename T>
-void SieveAddresses(const HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, SieveRule rule) {
+void SieveAddresses(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, SieveRule rule) {
     // map start values
     std::map<uintptr_t, T> valueMap = MapAddressValues<T>(victimProcess, hotAddresses);
 
     // start sieving
     std::map<SieveRule,bool(*)(T, T)> sieveRuleMap = {
-        { SieveRule::ONLY_UP, [](T currentValue, T mappedValue) { return currentValue >= mappedValue; } },
+        { SieveRule::ONLY_UP,   [](T currentValue, T mappedValue) { return currentValue >= mappedValue; } },
         { SieveRule::ONLY_DOWN, [](T currentValue, T mappedValue) { return currentValue <= mappedValue; } },
-        { SieveRule::STILL, [](T currentValue, T mappedValue) { return currentValue == mappedValue; } },
+        { SieveRule::STILL,     [](T currentValue, T mappedValue) { return currentValue == mappedValue; } },
     };
     std::cout << "PRESS \"S\" TO STOP.\n";
     while (true) {
@@ -78,7 +127,7 @@ void SieveAddresses(const HANDLE victimProcess, std::vector<uintptr_t>& hotAddre
         for (int i = hotAddresses.size() - 1; i >= 0; --i) {
             const uintptr_t address = hotAddresses[i];
             const T value = ReadAddress<T>(victimProcess, address);
-            if (sieveRuleMap[rule](value, valueMap[address])) {
+            if (!sieveRuleMap[rule](value, valueMap[address])) {
                 hotAddresses.erase(hotAddresses.begin() + i);
                 ClearScreen();
                 std::cout << "PRESS \"S\" TO STOP.\n";
@@ -89,7 +138,7 @@ void SieveAddresses(const HANDLE victimProcess, std::vector<uintptr_t>& hotAddre
 }
 
 template<typename T>
-std::vector<uintptr_t> ScanMemoryForValue(const HANDLE process, const T valueToFind, const double range) {
+std::vector<uintptr_t> ScanMemoryForValue(HANDLE process, const T valueToFind, const double range) {
     SYSTEM_INFO systemInfo;
     GetSystemInfo(&systemInfo);
 
@@ -120,12 +169,11 @@ std::vector<uintptr_t> ScanMemoryForValue(const HANDLE process, const T valueToF
 
         // sweep the editable region
         for (size_t i = 0; i < memoryInfo.RegionSize - sizeof(T); i += sizeof(T)) {
-            T value;
-            memcpy(&value, buffer + i, sizeof(T));
+            T readValue;
+            memcpy(&readValue, buffer + i, sizeof(T));
 
             // if a decimal value was provided, check if the read value is within the given range
-            bool inRange = (range > 0) && std::abs(value - valueToFind) < static_cast<T>(range);
-            if (value == valueToFind || inRange)
+            if (LetValuePass(readValue, valueToFind, range))
                 candidateAddresses.push_back(reinterpret_cast<uintptr_t>(memoryInfo.BaseAddress) + i);
         }
 
@@ -133,26 +181,6 @@ std::vector<uintptr_t> ScanMemoryForValue(const HANDLE process, const T valueToF
     }
 
     return candidateAddresses;
-}
-
-template<typename T>
-void WatchAddresses(HANDLE victimProcess, std::vector<uintptr_t>& addresses) {
-    std::map<uintptr_t, T> valueMap = MapAddressValues<T>(victimProcess, addresses);
-
-    while (true) {
-        std::cout << "PRESS \"S\" TO STOP.\n";
-        if (GetKeyState('S') & 0x8000)
-            break;
-
-        for (const uintptr_t& address : addresses) {
-            T value = ReadAddress<T>(victimProcess, address);
-            if (value == valueMap[address])
-                continue;
-
-            std::cout << "CHANGE: " << reinterpret_cast<void*>(address) << " -> " << value << std::endl;
-            break;
-        }
-    }
 }
 
 #endif //MEMORYTOOLS_H

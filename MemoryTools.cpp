@@ -1,5 +1,6 @@
 #include "MemoryTools.h"
 #include <tlhelp32.h>
+#include <fstream>
 #include "Input.h"
 
 void ClearScreen() {
@@ -34,6 +35,10 @@ bool IsStringInt(const std::string& string) {
     }
 }
 
+bool IsDoubleInRange(double readValue, double soughtValue, double range) {
+    return std::abs(readValue - soughtValue) <= range;
+}
+
 // Returns the PID of the process with the given name.
 int GetProcessPIDByName(const std::string& name) {
     PROCESSENTRY32 process;
@@ -53,6 +58,64 @@ int GetProcessPIDByName(const std::string& name) {
     return 0;
 }
 
+DataType GetUserDataType() {
+    // ask the user for the sought after data type
+    std::cout << "ENTER THE DATA TYPE OF THE VALUE YOU'RE TRYING TO CHANGE.\n";
+    const std::string dataTypeInput = GetValidInput([](const std::string& input)-> ValidatorResult {
+        if (input != "INT" && input != "FLOAT" && input != "DOUBLE")
+            return {false, "DATA TYPES ARE: INT, FLOAT, DOUBLE."};
+        return {true, ""};
+    });
+
+    // determine the data type
+    auto dataType = DataType::INT;
+    if (dataTypeInput == "INT")
+        dataType = DataType::INT;
+    else if (dataTypeInput == "FLOAT")
+        dataType = DataType::FLOAT;
+    else if (dataTypeInput == "DOUBLE")
+        dataType = DataType::DOUBLE;
+    return dataType;
+}
+
+std::vector<uintptr_t> GetCachedAddressesByName(const std::string& name) {
+    std::ifstream cacheFile;
+    cacheFile.open("SavedAddresses.txt");
+
+    if (cacheFile.fail()) {
+        std::cout << "ERROR OPENING CACHE FILE.\n";
+        return {};
+    }
+
+    std::string fileContents;
+    cacheFile >> fileContents;
+
+    int keyNameIndex = fileContents.find(name);
+    if (keyNameIndex == std::string::npos) {
+        std::cout << "ADDRESS KEY OF: " << name << " DOES NOT EXIST.\n";
+        return {};
+    }
+
+    std::vector<uintptr_t> addresses;
+    std::string currentAddress;
+    for (int i = keyNameIndex + name.length() + 1; i < fileContents.length(); i++) {
+        const char character = fileContents[i];
+
+        if (character == '.') {
+            addresses.push_back(std::stoll(currentAddress));
+            currentAddress = "";
+            continue;
+        }
+
+        currentAddress += character;
+    }
+    addresses.push_back(std::stoll(currentAddress));
+
+    cacheFile.close();
+    return addresses;
+}
+
+
 // Returns a list of addresses containing the value the user asked for.
 std::vector<uintptr_t> GetFirstHotAddresses(HANDLE victimProcess, const DataType dataType, const std::string& seekedValueInput) {
     ClearScreen();
@@ -67,8 +130,6 @@ std::vector<uintptr_t> GetFirstHotAddresses(HANDLE victimProcess, const DataType
             return ScanMemoryForValue<float>(victimProcess, std::stof(seekedValueInput), range);
         case DataType::DOUBLE:
             return ScanMemoryForValue<double>(victimProcess, std::stod(seekedValueInput), range);
-        case DataType::BOOL:
-            return ScanMemoryForValue<bool>(victimProcess, std::stoi(seekedValueInput), range);
         default: {
             std::cout << "THE FUCK KIND OF DATA TYPE DID YOU JUST GIVE ME?\n";
             return {};
@@ -77,6 +138,7 @@ std::vector<uintptr_t> GetFirstHotAddresses(HANDLE victimProcess, const DataType
 }
 
 void ManipulateAddresses(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataType dataType) {
+    hotAddresses.push_back(1);
     while (!hotAddresses.empty()) {
         std::cout << hotAddresses.size() << " ADDRESSES LEFT.\n";
         std::cout << "WHAT WOULD YOU LIKE TO DO WITH THE ADDRESSES?\n";
@@ -149,10 +211,6 @@ void Sieving(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataTyp
             SieveAddresses<double>(victimProcess, hotAddresses, rule);
             break;
         }
-        case DataType::BOOL: {
-            SieveAddresses<bool>(victimProcess, hotAddresses, rule);
-            break;
-        }
         default:
             break;
     }
@@ -179,6 +237,7 @@ void Widdling(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataTy
             return {true, ""};
         });
 
+        // widdle
         const double range = DetermineSearchRange(dataType);
         switch (dataType) {
             case DataType::INT: {
@@ -191,10 +250,6 @@ void Widdling(HANDLE victimProcess, std::vector<uintptr_t>& hotAddresses, DataTy
             }
             case DataType::DOUBLE: {
                 Widdle<double>(victimProcess, hotAddresses, dataType, std::stod(newValueInput), range);
-                break;
-            }
-            case DataType::BOOL: {
-                Widdle<bool>(victimProcess, hotAddresses, dataType, std::stoi(newValueInput), range);
                 break;
             }
         }
